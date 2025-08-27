@@ -1,14 +1,32 @@
 # IMPLEMENTATION OF OBSOLETE PROTOCOL HTTP/1.0 server (RECREATIONAL PROGRAMMING)
 # The purpose is not writing "pretty" code but to understand, more or less, what is HTTP/1.0 about
+# This implementation would serve static folder and i guess i'll add some custom router for post requests
+# Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
 # Followed by RFC1945
-# Interesting to implement: UDS
+# Interesting to implement: UDS, How to serve image static file in html, Params parsing
+import logging
 from dataclasses import dataclass
 import re
-import socket
-from constants import *
+import signal
+import socket, struct
+import os
+from error import error_with_html_page
+from datetime import datetime
 from argparse import ArgumentParser
 from args import get_arg_parser
 from enum import Enum
+
+from constants import *
+
+logging.basicConfig(level=logging.INFO)
+shutdown_flag = False
+
+def handle_sigint(signum, frame):
+    global shutdown_flag
+    print("\n[!] Caught SIGINT, shutting down...")
+    shutdown_flag = True
+
+signal.signal(signal.SIGINT, handle_sigint)
 
 #  HTTP/1.0 servers must:
 
@@ -31,6 +49,13 @@ status_line_regex = re.compile(
     r"^HTTP/(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<code>\d{3})\s+(?P<reason>.*)$"
 )
 
+# date handling
+dt_rfc1123 = "%a, %d %b %Y %H:%M:%S GMT"
+dt_rfc850 = "%A, %d-%b-%y %H:%M:%S GMT"
+dt_asctime = "%a %b %d %H:%M:%S %Y"
+
+DATE_FORMATS = [dt_rfc1123, dt_rfc850, dt_asctime]
+
 class HttpVersion(Enum):
     MAJOR_VERSION = 1
     MINOR_VERSION = 0
@@ -43,7 +68,7 @@ class RequestLine:
     proto_ver: str
 
     def __str__(self) -> str:
-        return f"{self.method} {self.request_uri} {self.proto_ver}"
+        return f"{self.method} {self.request_uri} {self.proto_ver}{CRLF}"
 
 @dataclass
 class StatusLine:
@@ -51,50 +76,99 @@ class StatusLine:
     status_code: int | None
     reason_phrase: str | None
 
-    def __str__(self) -> str:
-        return f"{self.proto_ver} {self.status_code} {self.reason_phrase}"
+    def format(self) -> str:
+        return f"{self.proto_ver} {self.status_code} {self.reason_phrase}{CRLF}"
 
-def parse_request_line(line: str):
+def prepare_server_socket() -> socket.socket:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(1.0) # set socket timeout so I can end program gracefully after SIGINT
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_DEBUG, 1)
+    linger = struct.pack("ii", 1, 2) # little-endian i = unsigned int (4 bytes)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, linger) # Maybe sometimes can help with data loss
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1) # Load balancing maybe in the future
+    return sock
+
+def prepare_response(status_line: StatusLine, headers: dict, body: bytes) -> bytes:
+    encoded_status_line = status_line.format().encode()
+    encoded_headers = b"".join([f"{key}: {value}{CRLF}".encode() for key, value in headers.items()])
+    return encoded_status_line + encoded_headers + CRLF.encode() + body
+
+def parse_http_request(buffer: bytes) -> tuple[RequestLine, dict, bytes]:
+    header_part, body_part = buffer.split(bytes(HEADER_BODY_SPLIT.encode()), 1)
+
+    request_headers = header_part.decode()
+    splitted_request_headers = request_headers.split(CRLF)
+
+    request_line: RequestLine = parse_request_line(splitted_request_headers[0])
+    request_headers_dict: dict = parse_request_headers(splitted_request_headers[1:])
+    return request_line, request_headers_dict, body_part
+
+def parse_request_line(line: str) -> RequestLine:
     m = request_line_regex.match(line)
 
     return RequestLine(method=m.group("method"), request_uri=m.group("uri"), proto_ver=f"HTTP/{m.group('major')}.{m.group('minor')}")
 
-def parse_request_headers(request_headers: list[str]):
+def parse_request_headers(request_headers: list[str]) -> dict:
     headers = {}
     for line in request_headers:
         line = line.split(": ")
         headers[line[0].lower()] = line[1].strip() # http headers are case-insensetive
     return headers
 
+def handle_get(line: RequestLine, headers: dict) -> bytes:
+    files = os.listdir(os.curdir + STATIC_FOLDER)
+    buffer: str = ""
+    ext = "html"
+    if line.request_uri[1:] in files:
+        with open(os.curdir + STATIC_FOLDER + line.request_uri, "rb") as file:
+            buffer: bytes = file.read()
+            ext = line.request_uri.split(".")[1]
+            sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
+    else:
+        buffer: bytes = error_with_html_page(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found").encode()
+        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.NOT_FOUND.code, reason_phrase=StatusCode.NOT_FOUND.reason)
+    logging.info("Serving client")
+    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer), "Connection": "close"}
+    return prepare_response(sl, resp_headers, buffer)
+
+def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
+    response = ""
+    response = handle_get(line, headers)
+    cli_sock.send(response)
 
 if __name__ == "__main__":
     parser: ArgumentParser = get_arg_parser()
     parser.parse_args()
     # phase 1 setup socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = prepare_server_socket()
     sock.bind((DEFAULT_HOST, DEFAULT_PORT))
     sock.listen(54)
-    while True:
-        cli_sock, addr = sock.accept()
-        buffer = b""
-        while bytes(HEADER_BODY_SPLIT.encode()) not in buffer:
-            chunk = cli_sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("Connection closed before headers were received")
-            buffer += chunk
-        header_part, body_part = buffer.split(bytes(HEADER_BODY_SPLIT.encode()), 1)
+    while not shutdown_flag:
+        try:
+            logging.info("Waiting for clients")
+            cli_sock, addr = sock.accept()
+            logging.info(f"Connected: {addr}")
+            buffer = b""
 
-        request_headers = header_part.decode()
-        splitted_request_headers = request_headers.split(CRLF)
+            while bytes(HEADER_BODY_SPLIT.encode()) not in buffer:
+                chunk = cli_sock.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Connection closed before headers were received")
+                buffer += chunk
+            logging.info("Read request")
 
-        request_line: RequestLine = parse_request_line(splitted_request_headers[0])
-        print(splitted_request_headers)
-        request_headers_dict: dict = parse_request_headers(splitted_request_headers[1:])
-        print(request_line)
-        print(request_headers_dict)
-        cli_sock.shutdown(socket.SHUT_WR)
-        cli_sock.close()
+            request_line, request_headers_dict, body_part = parse_http_request(buffer)
+            handle_http_request(cli_sock, line=request_line, headers=request_headers_dict, body=body_part)
+            logging.info("Finished serving")
+            cli_sock.close()
+            logging.info("Closed connection")
+        except socket.timeout:
+            logging.error("In timeout")
+            pass
 
-    sock.shutdown(socket.SHUT_WR)
     sock.close()
-    exit(0)
+    try:
+        cli_sock.close()
+    except Exception:
+        pass

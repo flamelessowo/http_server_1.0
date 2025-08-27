@@ -79,3 +79,9 @@ class MimeType(StrEnum):
     GP3 = "video/3gpp"      # with audio fallback
     G2_3 = "video/3gpp2"    # with audio fallback
     Z7 = "application/x-7z-compressed"
+
+EXT_TO_MIME = {f"{member.name.lower()}": member.value for member in MimeType}
+
+def ext_to_mime(ext: str) -> str:
+    ext = ext.lower()
+    return EXT_TO_MIME.get(ext, "application/octet-stream")
