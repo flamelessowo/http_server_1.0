@@ -148,6 +148,13 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
 
 def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
     response = ""
+    if line.method != "GET":
+        line = StatusLine(HttpVersion.REPR.value, StatusCode.BAD_REQUEST.code, StatusCode.BAD_REQUEST.reason)
+        buffer: bytes = error_with_html_page(StatusCode.BAD_REQUEST.code, StatusCode.BAD_REQUEST.reason, "Only GET requests are supported").encode()
+        resp_headers = {"Content-Type": ext_to_mime("html"), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
+        response: bytes = prepare_response(line, resp_headers, buffer)
+        cli_sock.send(response)
+        return
     response = handle_get(line, headers)
     cli_sock.send(response)
 
