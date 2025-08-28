@@ -4,12 +4,14 @@
 # Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
 # Followed by RFC1945
 # Interesting to implement: UDS, How to serve image static file in html, Params parsing
+import gzip
 import logging
 from dataclasses import dataclass
 import re
 import signal
 import socket, struct
 import os
+import zlib
 from error import error_with_html_page
 from datetime import datetime
 from argparse import ArgumentParser
@@ -48,6 +50,18 @@ request_line_regex = re.compile(
 status_line_regex = re.compile(
     r"^HTTP/(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<code>\d{3})\s+(?P<reason>.*)$"
 )
+
+def compress_with_gzip(data: bytes) -> bytes:
+    return gzip.compress(data)
+
+def decompress_with_gzip(data: bytes) -> bytes:
+    return gzip.decompress(data) 
+
+def compress_with_zlib(data: bytes) -> bytes:
+    return zlib.compress(data)
+
+def decompress_with_zlib(data: bytes) -> bytes:
+    return zlib.decompress(data)
 
 # date handling
 dt_rfc1123 = "%a, %d %b %Y %H:%M:%S GMT"
@@ -129,7 +143,7 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
         buffer: bytes = error_with_html_page(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found").encode()
         sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.NOT_FOUND.code, reason_phrase=StatusCode.NOT_FOUND.reason)
     logging.info("Serving client")
-    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer), "Connection": "close"}
+    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
     return prepare_response(sl, resp_headers, buffer)
 
 def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
@@ -164,7 +178,6 @@ if __name__ == "__main__":
             cli_sock.close()
             logging.info("Closed connection")
         except socket.timeout:
-            logging.error("In timeout")
             pass
 
     sock.close()
