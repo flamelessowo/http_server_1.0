@@ -134,25 +134,31 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
     files = os.listdir(os.curdir + STATIC_FOLDER)
     buffer: str = ""
     ext = "html"
-    if line.request_uri[1:] in files:
-        with open(os.curdir + STATIC_FOLDER + line.request_uri, "rb") as file:
-            buffer: bytes = file.read()
-            ext = line.request_uri.split(".")[1]
-            sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
-    else:
-        buffer: bytes = error_with_html_page(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found").encode()
-        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.NOT_FOUND.code, reason_phrase=StatusCode.NOT_FOUND.reason)
+
+    if not line.request_uri[1:] in files:
+        return generate_error_response(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found")
+
+    with open(os.curdir + STATIC_FOLDER + line.request_uri, "rb") as file:
+        buffer: bytes = file.read()
+        ext = line.request_uri.split(".")[1]
+        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
     logging.info("Serving client")
-    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
+    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)} # get_default_resp_headers
     return prepare_response(sl, resp_headers, buffer)
+
+def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
+    line = StatusLine(HttpVersion.REPR.value, status_code, reason)
+    buffer: bytes = error_with_html_page(status_code, reason, explain).encode()
+    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
+    response: bytes = prepare_response(line, resp_headers, buffer)
+    return response
 
 def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
     response = ""
     if line.method != "GET":
-        line = StatusLine(HttpVersion.REPR.value, StatusCode.BAD_REQUEST.code, StatusCode.BAD_REQUEST.reason)
-        buffer: bytes = error_with_html_page(StatusCode.BAD_REQUEST.code, StatusCode.BAD_REQUEST.reason, "Only GET requests are supported").encode()
-        resp_headers = {"Content-Type": ext_to_mime("html"), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
-        response: bytes = prepare_response(line, resp_headers, buffer)
+        response: bytes = generate_error_response(StatusCode.BAD_REQUEST.code, 
+                                                  StatusCode.BAD_REQUEST.reason, 
+                                                  "Only GET requests are supported")
         cli_sock.send(response)
         return
     response = handle_get(line, headers)
