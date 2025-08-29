@@ -63,6 +63,11 @@ def compress_with_zlib(data: bytes) -> bytes:
 def decompress_with_zlib(data: bytes) -> bytes:
     return zlib.decompress(data)
 
+encodings_map = {
+    "gzip": compress_with_gzip,
+    "x-compress": compress_with_zlib
+}
+
 # date handling
 dt_rfc1123 = "%a, %d %b %Y %H:%M:%S GMT"
 dt_rfc850 = "%A, %d-%b-%y %H:%M:%S GMT"
@@ -144,6 +149,11 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
         sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
     logging.info("Serving client")
     resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)} # get_default_resp_headers
+    # Handle encoding
+    if "accept-encoding" in headers.keys():
+        encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ")
+        buffer = encodings_map[encodings[0]](buffer)
+        resp_headers["Content-Encoding"] = encodings[0]
     return prepare_response(sl, resp_headers, buffer)
 
 def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
@@ -162,6 +172,7 @@ def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dic
         cli_sock.send(response)
         return
     response = handle_get(line, headers)
+
     cli_sock.send(response)
 
 if __name__ == "__main__":
