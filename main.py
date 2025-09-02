@@ -3,7 +3,8 @@
 # This implementation would serve static folder and i guess i'll add some custom router for post requests
 # Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
 # Followed by RFC1945
-# Interesting to implement: UDS, How to serve image static file in html, Params parsing
+# Interesting to implement: UDS, Params parsing, Template engine, Make this as python library
+# TODO proper error handling
 import gzip
 import logging
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ import socket, struct
 import os
 import zlib
 from error import error_with_html_page
-from datetime import datetime
+from datetime import datetime, UTC
 from argparse import ArgumentParser
 from args import get_arg_parser
 from enum import Enum
@@ -46,7 +47,9 @@ http_version_regex = re.compile(r"^HTTP/(?P<major>%d{1})\.(?P<minor>%d{1})$")
 request_line_regex = re.compile(
     r'^(?P<method>[A-Z]+)\s+(?P<uri>\S+)\s+HTTP/(?P<major>\d+)\.(?P<minor>\d+)$'
 )
-
+request_line_legacy_regex = re.compile(
+    r'^(?P<method>[A-Z]+)\s+(?P<uri>\S+)'
+)
 status_line_regex = re.compile(
     r"^HTTP/(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<code>\d{3})\s+(?P<reason>.*)$"
 )
@@ -114,7 +117,7 @@ def prepare_response(status_line: StatusLine, headers: dict, body: bytes) -> byt
     return encoded_status_line + encoded_headers + CRLF.encode() + body
 
 def parse_http_request(buffer: bytes) -> tuple[RequestLine, dict, bytes]:
-    header_part, body_part = buffer.split(bytes(HEADER_BODY_SPLIT.encode()), 1)
+    header_part, body_part = buffer.split(HEADER_BODY_SPLIT.encode(), 1)
 
     request_headers = header_part.decode()
     splitted_request_headers = request_headers.split(CRLF)
@@ -135,25 +138,36 @@ def parse_request_headers(request_headers: list[str]) -> dict:
         headers[line[0].lower()] = line[1].strip() # http headers are case-insensetive
     return headers
 
-def handle_get(line: RequestLine, headers: dict) -> bytes:
+def read_static_content(uri, ext="html") -> bytes:
     files = os.listdir(os.curdir + STATIC_FOLDER)
     buffer: str = ""
-    ext = "html"
+    print(files)
 
-    if not line.request_uri[1:] in files:
+    if uri[1:] not in files:
+        return None
+
+    with open(os.curdir + STATIC_FOLDER + uri, "rb") as file:
+        buffer = file.read()
+
+    return buffer
+
+def handle_get(line: RequestLine, headers: dict) -> bytes:
+    file_ext = line.request_uri.split(".")[1]
+    print(line.request_uri, file_ext)
+    buffer = read_static_content(uri=line.request_uri, ext=file_ext)
+
+    if buffer is None:
         return generate_error_response(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found")
 
-    with open(os.curdir + STATIC_FOLDER + line.request_uri, "rb") as file:
-        buffer: bytes = file.read()
-        ext = line.request_uri.split(".")[1]
-        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
+    sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
     logging.info("Serving client")
-    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)} # get_default_resp_headers
+    resp_headers = {"Content-Type": ext_to_mime(file_ext), "Server": "DumbHTTP/1.0", "Date": datetime.now(UTC).strftime(dt_rfc1123)} # get_default_resp_headers
     # Handle encoding
     if "accept-encoding" in headers.keys():
         encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ")
-        buffer = encodings_map[encodings[0]](buffer)
+        buffer = encodings_map[encodings[0]](buffer) # Take first encoding, i guess there should be custom criteria for that, It doesn't matter in my case
         resp_headers["Content-Encoding"] = encodings[0]
+    resp_headers["Content-Length"] = len(buffer)
     return prepare_response(sl, resp_headers, buffer)
 
 def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
@@ -175,6 +189,13 @@ def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dic
 
     cli_sock.send(response)
 
+def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
+    line = buffer.decode()
+    m = request_line_legacy_regex.match(line)
+    uri = m.group("uri")
+    buffer = read_static_content(uri)
+    cli_sock.send(buffer)
+
 if __name__ == "__main__":
     parser: ArgumentParser = get_arg_parser()
     parser.parse_args()
@@ -188,16 +209,27 @@ if __name__ == "__main__":
             cli_sock, addr = sock.accept()
             logging.info(f"Connected: {addr}")
             buffer = b""
+            legacy = False
 
             while bytes(HEADER_BODY_SPLIT.encode()) not in buffer:
                 chunk = cli_sock.recv(4096)
                 if not chunk:
+                    req_line = buffer.split(CRLF.encode(), 1)[0]
+                    m = request_line_legacy_regex.match(req_line.decode())
+                    if m:
+                        logging.info("Detected simple HTTP/0.9 request")
+                        legacy = True
+                        break
                     raise ConnectionError("Connection closed before headers were received")
                 buffer += chunk
+                print(buffer)
             logging.info("Read request")
 
-            request_line, request_headers_dict, body_part = parse_http_request(buffer)
-            handle_http_request(cli_sock, line=request_line, headers=request_headers_dict, body=body_part)
+            if legacy:
+                handle_simple_http_request(cli_sock, buffer)
+            else:
+                request_line, request_headers_dict, body_part = parse_http_request(buffer)
+                handle_http_request(cli_sock, line=request_line, headers=request_headers_dict, body=body_part)
             logging.info("Finished serving")
             cli_sock.close()
             logging.info("Closed connection")
