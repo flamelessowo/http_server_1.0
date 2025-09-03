@@ -157,15 +157,23 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
     if buffer is None:
         return generate_error_response(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found")
 
-    sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
     logging.info("Serving client")
-    resp_headers = {"Content-Type": ext_to_mime(file_ext), "Server": "DumbHTTP/1.0", "Date": datetime.now(UTC).strftime(dt_rfc1123)} # get_default_resp_headers
+    resp_headers = {"Content-Type": ext_to_mime(file_ext), 
+                    "Allow": "GET, HEAD", 
+                    "Server": "DumbHTTP/1.0", 
+                    "Date": datetime.now(UTC).strftime(dt_rfc1123)} # get_default_resp_headers
     # Handle encoding
     if "accept-encoding" in headers.keys():
         encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
         buffer = encodings_map[encodings[0]](buffer) # Take first encoding, i guess there should be custom criteria for that, It doesn't matter in my case
         resp_headers["Content-Encoding"] = encodings[0]
     resp_headers["Content-Length"] = len(buffer)
+
+    sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
+
+    if line.request_uri[1:] in moved_resources:
+        resp_headers["Location"] = moved_resources[line.request_uri[1:]]
+        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.MOVED_PERMANENTLY, reason_phrase=StatusCode.MOVED_PERMANENTLY.reason)
 
     if line.method == "HEAD":
         return prepare_response(sl, resp_headers, b"")
@@ -175,19 +183,30 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
 def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
     line = StatusLine(HttpVersion.REPR.value, status_code, reason)
     buffer: bytes = error_with_html_page(status_code, reason, explain).encode()
-    resp_headers = {"Content-Type": ext_to_mime(ext), "Server": "DumbHTTP/1.0", "Date": datetime.now().strftime(dt_rfc1123), "Content-Length": len(buffer)}
+    resp_headers = {"Content-Type": ext_to_mime(ext), 
+                    "Server": "DumbHTTP/1.0", 
+                    "Date": datetime.now().strftime(dt_rfc1123), 
+                    "Content-Length": len(buffer)}
     response: bytes = prepare_response(line, resp_headers, buffer)
     return response
 
 # Should accept GET, POST, HEAD RFC 1945 (8. Method Definitions)
 def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
     response = ""
-    if line.method not in ["GET", "HEAD"]:
+    if line.method not in ["GET", "HEAD", "POST"]:
         response: bytes = generate_error_response(StatusCode.BAD_REQUEST.code, 
                                                   StatusCode.BAD_REQUEST.reason, 
-                                                  "Only GET requests are supported")
+                                                  "Only [GET, HEAD] requests are supported")
         cli_sock.send(response)
         return
+    
+    if line.method == "POST":
+        response: bytes = generate_error_response(StatusCode.NOT_IMPLEMENTED.code, 
+                                                  StatusCode.NOT_IMPLEMENTED.reason, 
+                                                  "POST requests are not supported!")
+        cli_sock.send(response)
+        return
+
     response = handle_get(line, headers)
     cli_sock.send(response)
 
@@ -199,6 +218,7 @@ def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
     cli_sock.send(buffer)
 
 if __name__ == "__main__":
+    moved_resources = {"resource_moved.html": "new_resource.html"}
     parser: ArgumentParser = get_arg_parser()
     parser.parse_args()
     # phase 1 setup socket
