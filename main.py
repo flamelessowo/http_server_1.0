@@ -3,8 +3,8 @@
 # This implementation would serve static folder and i guess i'll add some custom router for post requests
 # Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
 # Followed by RFC1945
-# Interesting to implement: UDS, Params parsing, Template engine, Make this as python library
-# TODO proper error handling
+# Interesting to implement: UDS, Params parsing, Template engine, Make this as python library(probably not)
+# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2)
 import gzip
 import logging
 from dataclasses import dataclass
@@ -26,7 +26,7 @@ shutdown_flag = False
 
 def handle_sigint(signum, frame):
     global shutdown_flag
-    print("\n[!] Caught SIGINT, shutting down...")
+    logging.info("[!] Caught SIGINT, shutting down...")
     shutdown_flag = True
 
 signal.signal(signal.SIGINT, handle_sigint)
@@ -141,7 +141,6 @@ def parse_request_headers(request_headers: list[str]) -> dict:
 def read_static_content(uri, ext="html") -> bytes:
     files = os.listdir(os.curdir + STATIC_FOLDER)
     buffer: str = ""
-    print(files)
 
     if uri[1:] not in files:
         return None
@@ -153,7 +152,6 @@ def read_static_content(uri, ext="html") -> bytes:
 
 def handle_get(line: RequestLine, headers: dict) -> bytes:
     file_ext = line.request_uri.split(".")[1]
-    print(line.request_uri, file_ext)
     buffer = read_static_content(uri=line.request_uri, ext=file_ext)
 
     if buffer is None:
@@ -164,10 +162,14 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
     resp_headers = {"Content-Type": ext_to_mime(file_ext), "Server": "DumbHTTP/1.0", "Date": datetime.now(UTC).strftime(dt_rfc1123)} # get_default_resp_headers
     # Handle encoding
     if "accept-encoding" in headers.keys():
-        encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ")
+        encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
         buffer = encodings_map[encodings[0]](buffer) # Take first encoding, i guess there should be custom criteria for that, It doesn't matter in my case
         resp_headers["Content-Encoding"] = encodings[0]
     resp_headers["Content-Length"] = len(buffer)
+
+    if line.method == "HEAD":
+        return prepare_response(sl, resp_headers, b"")
+
     return prepare_response(sl, resp_headers, buffer)
 
 def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
@@ -177,16 +179,16 @@ def generate_error_response(status_code: int, reason: str, explain: str, *, ext=
     response: bytes = prepare_response(line, resp_headers, buffer)
     return response
 
+# Should accept GET, POST, HEAD RFC 1945 (8. Method Definitions)
 def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dict, body: bytes = b"") -> None:
     response = ""
-    if line.method != "GET":
+    if line.method not in ["GET", "HEAD"]:
         response: bytes = generate_error_response(StatusCode.BAD_REQUEST.code, 
                                                   StatusCode.BAD_REQUEST.reason, 
                                                   "Only GET requests are supported")
         cli_sock.send(response)
         return
     response = handle_get(line, headers)
-
     cli_sock.send(response)
 
 def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
@@ -222,7 +224,6 @@ if __name__ == "__main__":
                         break
                     raise ConnectionError("Connection closed before headers were received")
                 buffer += chunk
-                print(buffer)
             logging.info("Read request")
 
             if legacy:
