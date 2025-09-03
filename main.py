@@ -14,7 +14,7 @@ import socket, struct
 import os
 import zlib
 from error import error_with_html_page
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 from argparse import ArgumentParser
 from args import get_arg_parser
 from enum import Enum
@@ -138,30 +138,39 @@ def parse_request_headers(request_headers: list[str]) -> dict:
         headers[line[0].lower()] = line[1].strip() # http headers are case-insensetive
     return headers
 
-def read_static_content(uri, ext="html") -> bytes:
+def read_static_content(uri, ext="html") -> tuple[bytes, float]:
     files = os.listdir(os.curdir + STATIC_FOLDER)
     buffer: str = ""
 
     if uri[1:] not in files:
         return None
 
-    with open(os.curdir + STATIC_FOLDER + uri, "rb") as file:
-        buffer = file.read()
+    file_path = os.curdir + STATIC_FOLDER + uri
 
-    return buffer
+    with open(file_path, "rb") as file:
+        buffer = file.read()
+        mt_timestamp = os.path.getmtime(file_path)
+
+    return buffer, mt_timestamp # TODO problem with 1.1 requests from my user agent. It tries to hold socket and probably sends multiple requests
 
 def handle_get(line: RequestLine, headers: dict) -> bytes:
     file_ext = line.request_uri.split(".")[1]
-    buffer = read_static_content(uri=line.request_uri, ext=file_ext)
+    buffer, mt_timestamp = read_static_content(uri=line.request_uri, ext=file_ext)
 
     if buffer is None:
         return generate_error_response(StatusCode.NOT_FOUND.code, StatusCode.NOT_FOUND.reason, "Not found")
 
     logging.info("Serving client")
+    last_modified_date: datetime = datetime.fromtimestamp(mt_timestamp, UTC)
+    response_date: datetime = datetime.now(UTC)
+    cache_expire: datetime = response_date + timedelta(hours=1)
     resp_headers = {"Content-Type": ext_to_mime(file_ext), 
                     "Allow": "GET, HEAD", 
                     "Server": "DumbHTTP/1.0", 
-                    "Date": datetime.now(UTC).strftime(dt_rfc1123)} # get_default_resp_headers
+                    "Date": response_date.strftime(dt_rfc1123), # get_default_resp_headers
+                    "Last-Modified": last_modified_date.strftime(dt_rfc1123), # TODO Probably problem with redirect it takes modified time of old resource
+                    "Expires": cache_expire.strftime(dt_rfc1123)
+                    }
     # Handle encoding
     if "accept-encoding" in headers.keys():
         encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
@@ -214,7 +223,7 @@ def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
     line = buffer.decode()
     m = request_line_legacy_regex.match(line)
     uri = m.group("uri")
-    buffer = read_static_content(uri)
+    buffer, _ = read_static_content(uri)
     cli_sock.send(buffer)
 
 if __name__ == "__main__":
