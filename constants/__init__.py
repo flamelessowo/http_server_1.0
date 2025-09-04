@@ -15,3 +15,8 @@ STATIC_FOLDER = "/static"
 
 CRLF = "\r\n"
 HEADER_BODY_SPLIT = CRLF * 2
+
+# Dumb consts
+auth_user = {"username": "flamelessowo", "password": "1234#"}
+moved_resources = {"resource_moved.html": "new_resource.html"}
+authorized_resources = ["authenticated_resource.txt"]

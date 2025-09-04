@@ -1,18 +1,20 @@
 # IMPLEMENTATION OF OBSOLETE PROTOCOL HTTP/1.0 server (RECREATIONAL PROGRAMMING)
 # The purpose is not writing "pretty" code but to understand, more or less, what is HTTP/1.0 about
-# This implementation would serve static folder and i guess i'll add some custom router for post requests
 # Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
-# Followed by RFC1945
+# This implementation would serve static folder and i guess i'll add some custom router for post requests
+# Followed by RFC1945 (https://datatracker.ietf.org/doc/html/rfc1945)
 # Interesting to implement: UDS, Params parsing, Template engine, Make this as python library(probably not)
-# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2)
+# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2), if-modified-since (10.7),
+# Authorization (10.2)
 import gzip
 import logging
-from dataclasses import dataclass
 import re
 import signal
 import socket, struct
 import os
 import zlib
+import base64
+from dataclasses import dataclass
 from error import error_with_html_page
 from datetime import datetime, timedelta, UTC
 from argparse import ArgumentParser
@@ -52,6 +54,9 @@ request_line_legacy_regex = re.compile(
 )
 status_line_regex = re.compile(
     r"^HTTP/(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<code>\d{3})\s+(?P<reason>.*)$"
+)
+authorization_header_regex = re.compile(
+    r"^Basic\s+([A-Za-z0-9+/=]+)$", re.IGNORECASE
 )
 
 def compress_with_gzip(data: bytes) -> bytes:
@@ -151,9 +156,28 @@ def read_static_content(uri, ext="html") -> tuple[bytes, float]:
         buffer = file.read()
         mt_timestamp = os.path.getmtime(file_path)
 
-    return buffer, mt_timestamp # TODO problem with 1.1 requests from my user agent. It tries to hold socket and probably sends multiple requests
+    return buffer, mt_timestamp # TODO problem with HTTP/1.1 requests from my user agent. It tries to hold socket and probably sends multiple requests
 
-def handle_get(line: RequestLine, headers: dict) -> bytes:
+def handle_get(line: RequestLine, req_headers: dict) -> bytes:
+    if line.request_uri[1:] in authorized_resources:
+        if not "authorization" in req_headers:
+            return generate_error_response(StatusCode.UNAUTHORIZED.code, StatusCode.UNAUTHORIZED.reason, 
+                                           "No Authorization header found for protected resource", 
+                                            additional_headers={"WWW-Authenticate": "Basic realm=flamelessworld"})
+        m = authorization_header_regex.match(req_headers["authorization"])
+        if not m:
+            return generate_error_response(StatusCode.BAD_REQUEST.code, StatusCode.BAD_REQUEST.reason,
+                                           "Malformed Authorization credentials",
+                                           additional_headers={"WWW-Authenticate": "Basic realm=flamelessworld"})
+        decoded_b64 = base64.b64decode(m.group(1)).decode()
+        user_id, password = decoded_b64.split(":")
+        if auth_user["username"] != user_id:
+            return generate_error_response(StatusCode.FORBIDDEN.code, StatusCode.FORBIDDEN.reason,
+                                           "User not found")
+        if auth_user["password"] != password:
+            return generate_error_response(StatusCode.FORBIDDEN.code, StatusCode.FORBIDDEN.reason,
+                                           "Wrong password")
+
     file_ext = line.request_uri.split(".")[1]
     buffer, mt_timestamp = read_static_content(uri=line.request_uri, ext=file_ext)
 
@@ -172,8 +196,8 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
                     "Expires": cache_expire.strftime(dt_rfc1123)
                     }
     # Handle encoding
-    if "accept-encoding" in headers.keys():
-        encodings = headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
+    if "accept-encoding" in req_headers.keys():
+        encodings = req_headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
         buffer = encodings_map[encodings[0]](buffer) # Take first encoding, i guess there should be custom criteria for that, It doesn't matter in my case
         resp_headers["Content-Encoding"] = encodings[0]
     resp_headers["Content-Length"] = len(buffer)
@@ -189,13 +213,14 @@ def handle_get(line: RequestLine, headers: dict) -> bytes:
 
     return prepare_response(sl, resp_headers, buffer)
 
-def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html") -> bytes:
+def generate_error_response(status_code: int, reason: str, explain: str, *, ext="html", additional_headers={}) -> bytes:
     line = StatusLine(HttpVersion.REPR.value, status_code, reason)
     buffer: bytes = error_with_html_page(status_code, reason, explain).encode()
     resp_headers = {"Content-Type": ext_to_mime(ext), 
                     "Server": "DumbHTTP/1.0", 
                     "Date": datetime.now().strftime(dt_rfc1123), 
                     "Content-Length": len(buffer)}
+    resp_headers |= additional_headers
     response: bytes = prepare_response(line, resp_headers, buffer)
     return response
 
@@ -227,7 +252,6 @@ def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
     cli_sock.send(buffer)
 
 if __name__ == "__main__":
-    moved_resources = {"resource_moved.html": "new_resource.html"}
     parser: ArgumentParser = get_arg_parser()
     parser.parse_args()
     # phase 1 setup socket
