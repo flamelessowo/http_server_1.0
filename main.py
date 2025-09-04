@@ -4,7 +4,7 @@
 # This implementation would serve static folder and i guess i'll add some custom router for post requests
 # Followed by RFC1945 (https://datatracker.ietf.org/doc/html/rfc1945)
 # Interesting to implement: UDS, Params parsing, Template engine, Make this as python library(probably not)
-# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2)
+# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2), referer(10.13)
 import gzip
 import logging
 import re
@@ -124,14 +124,24 @@ def parse_request_line(line: str) -> RequestLine:
 
     return RequestLine(method=m.group("method"), request_uri=m.group("uri"), proto_ver=f"HTTP/{m.group('major')}.{m.group('minor')}")
 
-def parse_request_headers(request_headers: list[str]) -> dict:
+def parse_request_headers(lines: list[str]) -> dict:
     headers = {}
-    for line in request_headers:
-        line = line.split(":", 1)
-        headers[line[0].lower()] = line[1].strip() # http headers are case-insensetive
-    print(headers)
+    for raw in lines:
+        if not raw:
+            continue
+        k, sep, v = raw.partition(":")
+        if not sep:
+            # malformed
+            continue
+        k = k.strip().lower()
+        v = v.strip()
+        if k in headers:
+            headers[k] += ", " + v
+        else:
+            headers[k] = v
     return headers
 
+# TODO parse uri path properly and safer
 def read_static_content(uri, ext="html") -> tuple[bytes, float]:
     files = os.listdir(os.curdir + STATIC_FOLDER)
     buffer: str = ""
@@ -196,7 +206,6 @@ def handle_get(line: RequestLine, req_headers: dict) -> bytes:
     sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
 
     if "if-modified-since" in req_headers.keys():
-        print(req_headers["if-modified-since"])
         ims_date = datetime.strptime(req_headers["if-modified-since"], dt_rfc1123).replace(tzinfo=UTC)
         if last_modified_date <= ims_date:
             sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.NOT_MODIFIED.code, reason_phrase=StatusCode.NOT_MODIFIED.reason)
@@ -237,6 +246,16 @@ def handle_http_request(cli_sock: socket.socket, line: RequestLine, headers: dic
         return
     
     if line.method == "POST":
+        # I would not implement post but at least read body correctly using Content-Length header
+        content_length = int(headers["content-length"])
+        while len(body) < content_length:
+            body = b""
+            chunk = cli_sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("Connection closed too early")
+            body += chunk
+        logging.info("POST BODY\n" + body.decode())
+        
         response: bytes = generate_error_response(StatusCode.NOT_IMPLEMENTED.code, 
                                                   StatusCode.NOT_IMPLEMENTED.reason, 
                                                   "POST requests are not supported!")
