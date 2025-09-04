@@ -20,3 +20,4 @@ HEADER_BODY_SPLIT = CRLF * 2
 auth_user = {"username": "flamelessowo", "password": "1234#"}
 moved_resources = {"resource_moved.html": "new_resource.html"}
 authorized_resources = ["authenticated_resource.txt"]
+no_cache_resources = ["index.html"]

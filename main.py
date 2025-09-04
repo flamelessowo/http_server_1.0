@@ -1,11 +1,10 @@
-# IMPLEMENTATION OF OBSOLETE PROTOCOL HTTP/1.0 server (RECREATIONAL PROGRAMMING)
+# UNSAFE IMPLEMENTATION OF OBSOLETE PROTOCOL HTTP/1.0 server (RECREATIONAL PROGRAMMING)
 # The purpose is not writing "pretty" code but to understand, more or less, what is HTTP/1.0 about
 # Also I ,sometimes, use old fashioned python to more or less deeply go into the problems
 # This implementation would serve static folder and i guess i'll add some custom router for post requests
 # Followed by RFC1945 (https://datatracker.ietf.org/doc/html/rfc1945)
 # Interesting to implement: UDS, Params parsing, Template engine, Make this as python library(probably not)
-# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2), if-modified-since (10.7),
-# Authorization (10.2)
+# TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2)
 import gzip
 import logging
 import re
@@ -32,17 +31,6 @@ def handle_sigint(signum, frame):
     shutdown_flag = True
 
 signal.signal(signal.SIGINT, handle_sigint)
-
-#  HTTP/1.0 servers must:
-
-#       o recognize the format of the Request-Line for HTTP/0.9 and
-#         HTTP/1.0 requests;
-
-#       o understand any valid request in the format of HTTP/0.9 or
-#         HTTP/1.0;
-
-#       o respond appropriately with a message in the same protocol
-#         version used by the client.
 
 http_version_regex = re.compile(r"^HTTP/(?P<major>%d{1})\.(?P<minor>%d{1})$")
 #"GET /index.html HTTP/1.1\r\n"
@@ -139,8 +127,9 @@ def parse_request_line(line: str) -> RequestLine:
 def parse_request_headers(request_headers: list[str]) -> dict:
     headers = {}
     for line in request_headers:
-        line = line.split(": ")
+        line = line.split(":", 1)
         headers[line[0].lower()] = line[1].strip() # http headers are case-insensetive
+    print(headers)
     return headers
 
 def read_static_content(uri, ext="html") -> tuple[bytes, float]:
@@ -159,7 +148,8 @@ def read_static_content(uri, ext="html") -> tuple[bytes, float]:
     return buffer, mt_timestamp # TODO problem with HTTP/1.1 requests from my user agent. It tries to hold socket and probably sends multiple requests
 
 def handle_get(line: RequestLine, req_headers: dict) -> bytes:
-    if line.request_uri[1:] in authorized_resources:
+    resource = line.request_uri[1:]
+    if resource in authorized_resources:
         if not "authorization" in req_headers:
             return generate_error_response(StatusCode.UNAUTHORIZED.code, StatusCode.UNAUTHORIZED.reason, 
                                            "No Authorization header found for protected resource", 
@@ -195,6 +185,7 @@ def handle_get(line: RequestLine, req_headers: dict) -> bytes:
                     "Last-Modified": last_modified_date.strftime(dt_rfc1123), # TODO Probably problem with redirect it takes modified time of old resource
                     "Expires": cache_expire.strftime(dt_rfc1123)
                     }
+
     # Handle encoding
     if "accept-encoding" in req_headers.keys():
         encodings = req_headers.get("accept-encoding", "gzip, x-compress").split(", ") # TODO make proper encodings handling
@@ -204,9 +195,20 @@ def handle_get(line: RequestLine, req_headers: dict) -> bytes:
 
     sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.OK.code, reason_phrase=StatusCode.OK.reason)
 
-    if line.request_uri[1:] in moved_resources:
-        resp_headers["Location"] = moved_resources[line.request_uri[1:]]
-        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.MOVED_PERMANENTLY, reason_phrase=StatusCode.MOVED_PERMANENTLY.reason)
+    if "if-modified-since" in req_headers.keys():
+        print(req_headers["if-modified-since"])
+        ims_date = datetime.strptime(req_headers["if-modified-since"], dt_rfc1123).replace(tzinfo=UTC)
+        if last_modified_date <= ims_date:
+            sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.NOT_MODIFIED.code, reason_phrase=StatusCode.NOT_MODIFIED.reason)
+            return prepare_response(sl, resp_headers, b"")
+
+    if resource in moved_resources:
+        resp_headers["Location"] = moved_resources[resource]
+        sl = StatusLine(proto_ver=HttpVersion.REPR.value, status_code=StatusCode.MOVED_PERMANENTLY.code, reason_phrase=StatusCode.MOVED_PERMANENTLY.reason)
+        return prepare_response(sl, resp_headers, b"")
+
+    if resource in no_cache_resources:
+        resp_headers["Pragma"] = "no-cache"
 
     if line.method == "HEAD":
         return prepare_response(sl, resp_headers, b"")
