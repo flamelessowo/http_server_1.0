@@ -5,6 +5,7 @@
 # Followed by RFC1945 (https://datatracker.ietf.org/doc/html/rfc1945)
 # Interesting to implement: UDS, Params parsing, Template engine, Make this as python library(probably not)
 # TODO proper error handling, proper uri syntax(RFC 1945 3.2), charsets(3.4), multipart (3.6.2), referer(10.13)
+
 import gzip
 import logging
 import re
@@ -13,6 +14,8 @@ import socket, struct
 import os
 import zlib
 import base64
+# Http 1.1 and especially 2.0 would require secure connection so I have a reason to realize ssl encryption
+import ssl
 from dataclasses import dataclass
 from error import error_with_html_page
 from datetime import datetime, timedelta, UTC
@@ -274,11 +277,17 @@ def handle_simple_http_request(cli_sock: socket.socket, buffer: bytes):
 
 if __name__ == "__main__":
     parser: ArgumentParser = get_arg_parser()
-    parser.parse_args()
+    args = parser.parse_args()
     # phase 1 setup socket
     sock = prepare_server_socket()
     sock.bind((DEFAULT_HOST, DEFAULT_PORT))
     sock.listen(54)
+
+    if args.use_ssl:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile="./certs/cert.pem", keyfile="./certs/key.pem")
+        sock = context.wrap_socket(sock, server_side=True) 
+
     while not shutdown_flag:
         try:
             logging.info("Waiting for clients")
